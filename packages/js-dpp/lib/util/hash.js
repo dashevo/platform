@@ -1,18 +1,25 @@
-const crypto = require('crypto');
+const blake3Promise = require('@dashevo/blake3/browser-async');
 
-function sha256(payload) {
-  return crypto.createHash('sha256')
-    .update(payload)
-    .digest();
-}
+let blake3 = {};
 /**
- * Serialize and hash payload using double sha256
+ * Init the blake 3 hasher
+ * @returns {Promise<void>}
+ */
+async function initBlake3() {
+  blake3 = await blake3Promise();
+}
+
+/**
+ * Serialize and hash payload using blake 3
  *
  * @param {Buffer} buffer
  * @return {Buffer}
  */
 function hash(buffer) {
-  return sha256(sha256(buffer));
+  return Buffer.from(blake3.hash(buffer));
 }
 
-module.exports = { hash };
+module.exports = {
+  initBlake3,
+  hash,
+};
