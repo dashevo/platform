@@ -4,6 +4,8 @@ const {
   Signer: { sign, verifySignature, verifyHashSignature },
 } = require('@dashevo/dashcore-lib');
 
+const Interpreter = require('@dashevo/dashcore-lib/lib/script/interpreter');
+
 const StateTransitionIsNotSignedError = require(
   './errors/StateTransitionIsNotSignedError',
 );
@@ -167,7 +169,8 @@ class AbstractStateTransition {
 
     switch (keyType) {
       case IdentityPublicKey.TYPES.ECDSA_SECP256K1:
-      case IdentityPublicKey.TYPES.ECDSA_HASH160: {
+      case IdentityPublicKey.TYPES.ECDSA_HASH160:
+      case IdentityPublicKey.TYPES.BIP13_SCRIPT_HASH: {
         const privateKeyModel = new PrivateKey(privateKey);
 
         this.setSignature(sign(data, privateKeyModel));
@@ -230,6 +233,25 @@ class AbstractStateTransition {
     }
 
     return isSignatureVerified;
+  }
+
+  /**
+   * @protected
+   * @param {Script} scriptSig
+   * @param {Script} scriptPublicKey
+   * @return {boolean}
+   */
+  verifyBIP13ScriptHashSignatureByScriptHash(scriptSig, scriptPublicKey) {
+    // eslint-disable-next-line no-bitwise
+    const flags = Interpreter.SCRIPT_VERIFY_P2SH | Interpreter.SCRIPT_VERIFY_STRICTENC;
+
+    return new Interpreter().verify(
+      scriptSig,
+      scriptPublicKey,
+      undefined,
+      undefined,
+      flags,
+    );
   }
 
   /**
@@ -333,6 +355,7 @@ class AbstractStateTransition {
  * @property {number} protocolVersion
  * @property {number} type
  * @property {Buffer} [signature]
+ * @property {Buffer} [signatureScript]
  */
 
 /**
@@ -340,6 +363,7 @@ class AbstractStateTransition {
  * @property {number} protocolVersion
  * @property {number} type
  * @property {string} [signature]
+ * @property {string} [signatureScript]
  */
 
 AbstractStateTransition.documentTransitionTypes = [

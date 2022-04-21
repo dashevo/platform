@@ -1,3 +1,4 @@
+const Script = require('@dashevo/dashcore-lib/lib/script');
 const InvalidDataContractIdError = require('../../../../../errors/consensus/basic/dataContract/InvalidDataContractIdError');
 
 const generateDataContractId = require('../../../../generateDataContractId');

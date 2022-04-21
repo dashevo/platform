@@ -119,7 +119,9 @@ function validatePublicKeysFactory(validator, jsonSchema, bls) {
             break;
           }
           case IdentityPublicKey.TYPES.ECDSA_HASH160:
-          // Do nothing
+          case IdentityPublicKey.TYPES.BIP13_SCRIPT_HASH:
+            // TODO Validate that it's valid Script
+
             break;
           default:
             throw new TypeError(`Unknown public key type: ${rawPublicKey.type}`);

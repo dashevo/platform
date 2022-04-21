@@ -4,6 +4,7 @@ const {
   crypto: { Hash },
 } = require('@dashevo/dashcore-lib');
 
+const Script = require('@dashevo/dashcore-lib/lib/script');
 const AbstractStateTransition = require('./AbstractStateTransition');
 
 const IdentityPublicKey = require('../identity/IdentityPublicKey');
@@ -24,7 +25,9 @@ class AbstractStateTransitionIdentitySigned extends AbstractStateTransition {
   /**
    * @param {
    * RawDataContractCreateTransition|
-   * RawDocumentsBatchTransition
+   * RawDocumentsBatchTransition|
+   * RawDataContractUpdateTransition|
+   * RawIdentityUpdateTransition
    * } [rawStateTransition]
    */
   constructor(rawStateTransition = {}) {
@@ -32,6 +35,10 @@ class AbstractStateTransitionIdentitySigned extends AbstractStateTransition {
 
     if (Object.prototype.hasOwnProperty.call(rawStateTransition, 'signaturePublicKeyId')) {
       this.signaturePublicKeyId = rawStateTransition.signaturePublicKeyId;
+    }
+
+    if (Object.prototype.hasOwnProperty.call(rawStateTransition, 'bip16Script')) {
+      this.setBIP16Script(rawStateTransition.bip16Script);
     }
   }
 
@@ -104,6 +111,7 @@ class AbstractStateTransitionIdentitySigned extends AbstractStateTransition {
 
         await this.signByPrivateKey(privateKeyModel, identityPublicKey.getType());
         break;
+      case IdentityPublicKey.TYPES.BIP13_SCRIPT_HASH:
       default:
         throw new InvalidIdentityPublicKeyTypeError(identityPublicKey.getType());
     }
@@ -156,11 +164,6 @@ class AbstractStateTransitionIdentitySigned extends AbstractStateTransition {
     this.verifyPublicKeyLevelAndPurpose(publicKey);
     this.verifyPublicKeyIsEnabled(publicKey);
 
-    const signature = this.getSignature();
-    if (!signature) {
-      throw new StateTransitionIsNotSignedError(this);
-    }
-
     if (this.getSignaturePublicKeyId() !== publicKey.getId()) {
       throw new PublicKeyMismatchError(publicKey);
     }
@@ -169,7 +172,12 @@ class AbstractStateTransitionIdentitySigned extends AbstractStateTransition {
 
     switch (publicKey.getType()) {
       case IdentityPublicKey.TYPES.ECDSA_HASH160:
-        return this.verifyESDSAHash160SignatureByPublicKeyHash(publicKeyBuffer);
+         return this.verifyESDSAHash160SignatureByPublicKeyHash(publicKeyBuffer);
+      case IdentityPublicKey.TYPES.BIP13_SCRIPT_HASH:
+        return this.verifyBIP13ScriptHashSignatureByScriptHash(
+          this.getBIP16Script(),
+          new Script(publicKeyBuffer),
+        );
       case IdentityPublicKey.TYPES.ECDSA_SECP256K1:
         return this.verifyECDSASignatureByPublicKey(PublicKey.fromBuffer(publicKeyBuffer));
       case IdentityPublicKey.TYPES.BLS12_381: {
@@ -210,7 +218,28 @@ class AbstractStateTransitionIdentitySigned extends AbstractStateTransition {
       rawStateTransition.signaturePublicKeyId = this.getSignaturePublicKeyId();
     }
 
+    if (this.script) {
+      rawStateTransition.script = this.script.toBuffer();
+    }
+
     return rawStateTransition;
+  }
+
+  /**
+   * Get state transition as JSON
+   *
+   * @return {JsonStateTransition}
+   */
+  toJSON() {
+    const jsonStateTransition = {
+      ...super.toJSON(),
+    };
+
+    if (this.getScript()) {
+      jsonStateTransition.script = this.getScript().toHex();
+    }
+
+    return jsonStateTransition;
   }
 
   /**
@@ -222,16 +251,33 @@ class AbstractStateTransitionIdentitySigned extends AbstractStateTransition {
   getKeySecurityLevelRequirement() {
     return IdentityPublicKey.SECURITY_LEVELS.MASTER;
   }
+
+  /**
+   *
+   * @returns {Script}
+   */
+  getBIP16Script() {
+    return this.bip16Script;
+  }
+
+  /**
+   * @param {Script|Buffer} bip16Script
+   */
+  setBIP16Script(bip16Script) {
+    this.bip16Script = new Script(bip16Script);
+  }
 }
 
 /**
  * @typedef {RawStateTransition & Object} RawStateTransitionIdentitySigned
  * @property {Buffer} [signaturePublicKeyId]
+ * @property {Buffer} [bip16Script]
  */
 
 /**
  * @typedef {JsonStateTransition & Object} JsonStateTransitionIdentitySigned
  * @property {string} [signaturePublicKeyId]
+ * @property {string} [bip16Script]
  */
 
 module.exports = AbstractStateTransitionIdentitySigned;

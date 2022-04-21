@@ -51,28 +51,61 @@
     "signaturePublicKeyId": {
       "type": "integer",
       "minimum": 0
+    },
+    "signatureScript": {
+      "type": "array",
+      "byteArray": true,
+      "minItems": 1,
+      "maxItems": 10000
     }
   },
   "dependentRequired" : {
     "disablePublicKeys": ["publicKeysDisabledAt"],
     "publicKeysDisabledAt": ["disablePublicKeys"]
   },
-  "anyOf": [
+  "allOf": [
     {
-      "type": "object",
-      "required": ["addPublicKeys"],
       "properties": {
-        "addPublicKeys": true
+        "anyOf": [
+          {
+            "type": "object",
+            "required": ["addPublicKeys"],
+            "properties": {
+              "addPublicKeys": true
+            }
+          },
+          {
+            "type": "object",
+            "required": ["disablePublicKeys"],
+            "properties": {
+              "disablePublicKeys": true
+            }
+          }
+        ]
       }
     },
     {
-      "type": "object",
-      "required": ["disablePublicKeys"],
       "properties": {
-        "disablePublicKeys": true
+        "anyOf": [
+          {
+            "type": "object",
+            "required": ["signature"],
+            "properties": {
+              "signature": true
+            }
+          },
+          {
+            "type": "object",
+            "required": ["signatureScript"],
+            "properties": {
+              "signatureScript": true
+            }
+          }
+        ]
       }
     }
   ],
+
   "additionalProperties": false,
   "required": [
     "protocolVersion",
