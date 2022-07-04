@@ -1,6 +1,7 @@
 {
+  "//": "ES2017 from es5 is required in order to have usage of super().",
   "compilerOptions": {
-    "target": "es5",
+    "target": "es2017",
     "module": "commonjs",
     "lib": ["es6"],
     "outDir": "./build",
