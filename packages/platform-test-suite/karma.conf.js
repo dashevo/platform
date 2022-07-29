@@ -5,6 +5,7 @@ const karmaMocha = require('karma-mocha');
 const karmaMochaReporter = require('karma-mocha-reporter');
 const karmaChai = require('karma-chai');
 const karmaChromeLauncher = require('karma-chrome-launcher');
+// const karmaFirefoxLauncher = require('karma-firefox-launcher');
 const karmaSourcemapLoader = require('karma-sourcemap-loader');
 const karmaWebpack = require('karma-webpack');
 
@@ -74,9 +75,16 @@ module.exports = (config) => {
       karmaMocha,
       karmaMochaReporter,
       karmaChai,
+      // karmaFirefoxLauncher,
       karmaChromeLauncher,
       karmaSourcemapLoader,
       karmaWebpack,
     ],
+    customLaunchers: {
+      FirefoxHeadless: {
+        base: 'Firefox',
+        flags: ['-headless'],
+      },
+    },
   });
 };

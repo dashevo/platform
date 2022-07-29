@@ -63,6 +63,9 @@ class JsonRpcTransport {
       requestOptions.timeout = options.timeout;
     }
 
+    // eslint-disable-next-line no-param-reassign
+    params.idq = Math.random().toString().replace('0.', '');
+
     try {
       const result = await this.requestJsonRpc(
         address.getHost(),
@@ -80,9 +83,13 @@ class JsonRpcTransport {
     } catch (error) {
       this.lastUsedAddress = address;
 
+      console.log('DAPIERROR', error, `code=${error.code}!`, method, JSON.stringify(params));
+
       if (error.code === undefined) {
         throw error;
       }
+
+      console.log('markAsBanned');
 
       address.markAsBanned();
 

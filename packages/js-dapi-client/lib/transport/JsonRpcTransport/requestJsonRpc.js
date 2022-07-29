@@ -1,4 +1,5 @@
 const axios = require('axios');
+// const fetch = require('node-fetch').default;
 
 const JsonRpcError = require('./errors/JsonRpcError');
 const WrongHttpCodeError = require('./errors/WrongHttpCodeError');
@@ -15,7 +16,7 @@ const WrongHttpCodeError = require('./errors/WrongHttpCodeError');
 async function requestJsonRpc(host, port, method, params, options = {}) {
   const protocol = port === 443 ? 'https' : 'http';
 
-  const url = `${protocol}://${host}${port && port !== 443 ? `:${port}` : ''}`;
+  let url = `${protocol}://${host}${port && port !== 443 ? `:${port}` : ''}`;
 
   const payload = {
     jsonrpc: '2.0',
@@ -39,7 +40,29 @@ async function requestJsonRpc(host, port, method, params, options = {}) {
 
   let response;
 
+  if (params.idq) {
+    url = `${url}/?${params.idq}`;
+  }
+
+  // const controller = new AbortController();
+  // const timeoutId = setTimeout(() => controller.abort(), options.timeout);
+  // const headers = { 'Content-type': 'application/json', 'Accept': 'application/json' };
   try {
+    // response = await fetch(
+    //   url,
+    //   {
+    //     method: 'POST', body: JSON.stringify(payload), signal: controller.signal, headers,
+    //   },
+    // );
+    //
+    // response = {
+    //   data: await response.json(),
+    //   status: response.status,
+    //   statusMessage: response.statusMessage,
+    // };
+
+    // console.log(response);
+
     response = await axios.post(
       url,
       payload,
@@ -51,6 +74,8 @@ async function requestJsonRpc(host, port, method, params, options = {}) {
     }
 
     throw error;
+  // } finally {
+  //   clearTimeout(timeoutId);
   }
 
   if (response.status !== 200) {
