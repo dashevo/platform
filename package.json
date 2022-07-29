@@ -70,6 +70,7 @@
   ],
   "resolutions": {
     "elliptic": "6.5.3",
-    "bn.js": "4.12.0"
+    "bn.js": "4.12.0",
+    "@dashevo/dashcore-lib": "~0.19.40"
   }
 }

@@ -3,11 +3,19 @@ const EventEmitter = require('events');
 const {
   Transaction, BlockHeader,
 } = require('@dashevo/dashcore-lib');
+const CONSTANTS = require('../../CONSTANTS');
 
 const SCHEMA = {
-  blockHeaders: {
-    '*': (hex) => new BlockHeader(Buffer.from(hex, 'hex')),
+  headersMetadata: {
+    '*': {
+      height: 'number',
+      time: 'number',
+    },
   },
+  lastSyncedHeaderHeight: 'number',
+  blockHeaders: [
+    (hex) => new BlockHeader(Buffer.from(hex, 'hex')),
+  ],
   transactions: {
     '*': Transaction,
   },
@@ -38,16 +46,45 @@ class ChainStore extends EventEmitter {
       fees: {
         minRelay: -1,
       },
+      lastSyncedHeaderHeight: -1, // TODO: make sure it's -1, it is important for further math
       blockHeight: 0,
-      blockHeaders: new Map(),
+      blockHeaders: [],
+      headersMetadata: {},
       transactions: new Map(),
       instantLocks: new Map(),
       addresses: new Map(),
     };
+
+    this.headersToKeep = CONSTANTS.STORAGE.headersToKeep;
   }
 
   getTransactions() {
     return this.state.transactions;
+  }
+
+  // TODO: write tests
+  updateHeadersMetadata(headers, tipHeight) {
+    headers.forEach((header, index) => {
+      if (this.state.headersMetadata[header.hash]) {
+        throw new Error(`Header ${header.hash} already exists`);
+      }
+
+      Object.assign(this.state.headersMetadata, {
+        [header.hash]: {
+          height: tipHeight - headers.length + index + 1,
+          time: header.time,
+        },
+      });
+    });
+    // console.log('Headers metadata', Object.keys(this.state.headersMetadata).length);
+  }
+
+  updateLastSyncedHeaderHeight(height) {
+    if (height < this.state.lastSyncedHeaderHeight) {
+      throw new Error('Cannot update lastSyncedHeaderHeight to a lower value');
+    }
+
+    this.state.lastSyncedHeaderHeight = height;
   }
 }
 

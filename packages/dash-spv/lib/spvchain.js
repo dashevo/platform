@@ -1,17 +1,30 @@
-const BlockStore = require('./blockstore');
 const config = require('../config/config');
 const Consensus = require('./consensus');
-const utils = require('../lib/utils');
+const utils = require('./utils');
 
 const SpvChain = class {
-  constructor(chainType, confirms = 100, startBlock) {
+  // TODO: add startBlockHeight as well
+  constructor(chainType, confirms = 100, startBlock = null, startBlockHeight = 0) {
     this.root = null;
     this.allBranches = [];
     this.orphanBlocks = [];
     this.orphanChunks = [];
     this.confirmsBeforeFinal = confirms;
     this.init(chainType, startBlock);
-    this.store = new BlockStore();
+    this.prunedHeaders = [];
+    this.startBlockHeight = startBlockHeight;
+    // TODO: test
+    this.hashesByHeight = {
+      [startBlockHeight]: this.root.hash,
+    };
+    this.heightByHash = {
+      [this.root.hash]: startBlockHeight,
+    };
+    /**
+     * Index set to check for duplicates
+     * @type {Set<any>}
+     */
+    this.orphansHashes = new Set();
   }
 
   init(chainType, startBlock) {
@@ -77,16 +90,30 @@ const SpvChain = class {
     this.setAllBranches();
   }
 
+  /**
+   * @param {BlockHeader} header
+   * @param {number} height
+   */
+  makeNewChain(header, height) {
+    this.allBranches = [[header]];
+    this.startBlockHeight = height;
+    this.hashesByHeight = {
+      [height]: header.hash,
+    };
+    this.heightByHash = {
+      [header.hash]: height,
+    };
+  }
+
   /** @private */
   checkPruneBlocks() {
     const longestChain = this.getLongestChain();
 
-    while (longestChain.length > this.confirmsBeforeFinal) {
-      const pruneBlock = longestChain.splice(0, 1)[0];
-      // Children discarded as stale branches
-      delete pruneBlock.orphan;
-      this.store.put(pruneBlock);
-    }
+    longestChain
+      .splice(0, longestChain.length - this.confirmsBeforeFinal)
+      .forEach((header) => {
+        this.prunedHeaders.push(header);
+      });
   }
 
   /** @private */
@@ -118,7 +145,18 @@ const SpvChain = class {
 
   /** @private */
   appendHeadersToLongestChain(headers) {
-    const newLongestChain = this.getLongestChain().concat(headers);
+    const longestChain = this.getLongestChain();
+    const lastHeight = this.startBlockHeight
+      + longestChain.length + this.prunedHeaders.length;
+
+    headers.forEach((header, i) => {
+      const height = lastHeight + i;
+      this.hashesByHeight[height] = header.hash;
+      this.heightByHash[header.hash] = height;
+    });
+
+    const newLongestChain = longestChain.concat(headers);
+
     this.allBranches = [];
     this.allBranches.push(newLongestChain);
   }
@@ -129,10 +167,8 @@ const SpvChain = class {
   }
 
   /** @private */
-  isDuplicate(compareHash) {
-    return this.getAllBranches().map(branch => branch.map(node => node.hash))
-      .concat(this.orphanBlocks.map(orphan => orphan.hash))
-      .filter(hash => hash === compareHash).length > 0;
+  isDuplicate(hash) {
+    return this.heightByHash[hash] || this.orphansHashes.has(hash);
   }
 
   /** @private */
@@ -148,13 +184,21 @@ const SpvChain = class {
 
   /** @private */
   orphanChunksReconnect() {
+    // TODO: consider optimizing with map of { [chunkHeadHash]: chunkIndex }
+    // to get rid of sorting and make the whole function of O(n) complexity
     this.orphanChunks.sort((a, b) => a[0].timestamp - b[0].timestamp);
-    this.orphanChunks.slice().forEach((chunk, index) => {
+
+    for (let i = 0; i < this.orphanChunks.length; i += 1) {
+      const chunk = this.orphanChunks[i];
       if (this.getTipHash() === utils.getCorrectedHash(chunk[0].prevHash)) {
         this.appendHeadersToLongestChain(chunk);
-        this.orphanChunks.splice(index, 1);
+        chunk.forEach((header) => {
+          this.orphansHashes.delete(header.hash);
+        });
+        this.orphanChunks.splice(i, 1);
+        i -= 1;
       }
-    });
+    }
   }
 
   /** @private */
@@ -215,12 +259,18 @@ const SpvChain = class {
   /* eslint-enable no-param-reassign */
 
   /**
-   * gets the longest chain
-   *
-   * @return {Object[]}
+   * Returns the longest chain of headers
+   * @param options
+   * @returns {*}
    */
-  getLongestChain() {
-    return this.allBranches.sort((b1, b2) => b1 < b2)[0];
+  getLongestChain(options = { withPruned: false }) {
+    let longestChain = this.allBranches.sort((b1, b2) => b1 < b2)[0];
+
+    if (options.withPruned) {
+      longestChain = this.prunedHeaders.concat(longestChain);
+    }
+
+    return longestChain;
   }
 
   /**
@@ -248,14 +298,25 @@ const SpvChain = class {
    * @return {Object} header
    */
   getHeader(hash) {
-    return this.store.get(hash)
-      .then((blockInDB) => {
-        if (blockInDB) {
-          return blockInDB;
-        }
+    // TODO: perform lookup in pruned headers?
+    return this.getLongestChain().filter((h) => h.hash === hash)[0];
+  }
 
-        return this.getLongestChain().filter(h => h.hash === hash)[0];
-      });
+  /**
+   * Gets specified amount of headers in the confirmed chain
+   * @param n
+   * @return Object[]
+   */
+  getLastHeaders(n) {
+    const longestChain = this.getLongestChain();
+    let headers = longestChain.slice(-n);
+
+    if (headers.length < n) {
+      const remaining = n - headers.length;
+      headers = [...this.prunedHeaders.slice(-remaining), ...headers];
+    }
+
+    return headers;
   }
 
   /**
@@ -285,26 +346,42 @@ const SpvChain = class {
    * added to an orphan array for possible later reconnection
    *
    * @param {Object[]|string[]|buffer[]} headers
-   * @return {boolean}
+   * @return {BlockHeader[]}
    */
   addHeaders(headers) {
-    if (headers.length === 1) {
-      if (!this.addHeader(headers[0])) {
-        throw new Error('Some headers are invalid');
-      } else {
-        return true;
-      }
+    // TODO: fix. `addHeader` function uses partially implemented
+    // reorg functionality and throws an error
+    // if (headers.length === 1) {
+    //   if (!this.addHeader(headers[0])) {
+    //     throw new Error('Some headers are invalid');
+    //   } else {
+    //     return true;
+    //   }
+    // }
+    const normalizedHeaders = headers.map((h) => utils.normalizeHeader(h));
+    const tip = this.getTipHeader();
+    // Handle 1 block intersection of batches
+    if (tip.hash === normalizedHeaders[0].hash) {
+      normalizedHeaders.splice(0, 1);
     }
-    const normalizedHeaders = headers.map(h => utils.normalizeHeader(h));
-    const isOrphan = !SpvChain.isParentChild(normalizedHeaders[0], this.getTipHeader());
+
+    if (normalizedHeaders.length === 0) {
+      // The batch already in the chain, do nothing
+      return [];
+    }
+
+    const isOrphan = !SpvChain.isParentChild(normalizedHeaders[0], tip);
 
     const allValid = normalizedHeaders.reduce(
       (acc, header, index, array) => {
         const previousHeaders = normalizedHeaders.slice(0, index);
         if (index !== 0) {
-          if (!SpvChain.isParentChild(header, array[index - 1])
-            || !this.isValid(header, previousHeaders)) {
-            throw new Error('Some headers are invalid');
+          if (!SpvChain.isParentChild(header, array[index - 1])) {
+            throw new Error(`SPV: Header ${header.hash} is not a child of ${array[index - 1].hash}`);
+          }
+
+          if (!this.isValid(header, previousHeaders)) {
+            throw new Error(`SPV: Header ${header.hash} is invalid`);
           }
           return acc && true;
         }
@@ -324,6 +401,9 @@ const SpvChain = class {
       throw new Error('Some headers are invalid');
     }
     if (isOrphan) {
+      normalizedHeaders.forEach((header) => {
+        this.orphansHashes.add(header.hash);
+      });
       this.orphanChunks.push(normalizedHeaders);
     } else {
       this.appendHeadersToLongestChain(normalizedHeaders);
@@ -332,7 +412,7 @@ const SpvChain = class {
       this.orphanChunksReconnect();
     }
     this.checkPruneBlocks();
-    return true;
+    return normalizedHeaders;
   }
 };
 

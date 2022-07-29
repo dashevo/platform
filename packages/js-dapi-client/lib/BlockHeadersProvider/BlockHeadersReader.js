@@ -1,4 +1,7 @@
 const { EventEmitter } = require('events');
+const { BlockHeader } = require('@dashevo/dashcore-lib');
+const GrpcErrorCodes = require('@dashevo/grpc-common/lib/server/error/GrpcErrorCodes');
+const DAPIStream = require('../transport/DAPIStream');
 
 const EVENTS = {
   BLOCK_HEADERS: 'BLOCK_HEADERS',
@@ -37,6 +40,18 @@ class BlockHeadersReader extends EventEmitter {
      * @type {*[]}
      */
     this.historicalStreams = [];
+
+    /**
+     * Holds reference to the continuous sync stream
+     *
+     * @type {Stream}
+     */
+    this.continuousSyncStream = null;
+
+    // TODO: test - remove
+    this.streamsStats = {
+
+    };
   }
 
   /**
@@ -53,6 +68,9 @@ class BlockHeadersReader extends EventEmitter {
 
     const totalAmount = toBlockHeight - fromBlockHeight + 1;
     if (totalAmount === 0) {
+      // TODO: Why do we silently return without any feedback?
+      // Aha, probably because if there's nothing to sync historically, then we're done
+      // Silence is not good though
       return;
     }
 
@@ -82,32 +100,52 @@ class BlockHeadersReader extends EventEmitter {
       }
     });
 
+    // TODO: consider reworking with minBatchSize instead of targetBatchSize
     const numStreams = Math.min(
       Math.max(Math.round(totalAmount / this.targetBatchSize), 1),
       this.maxParallelStreams,
     );
 
     const actualBatchSize = Math.ceil(totalAmount / numStreams);
+    this.streamsStats.batchSize = actualBatchSize;
+    // TODO: test
+    console.log('Num streams', numStreams, actualBatchSize);
     for (let batchIndex = 0; batchIndex < numStreams; batchIndex += 1) {
-      const startingHeight = (batchIndex * actualBatchSize) + 1;
+      const startingHeight = (batchIndex * actualBatchSize) + fromBlockHeight;
       const count = Math.min(actualBatchSize, toBlockHeight - startingHeight + 1);
+      // console.log('Spawn stream', startingHeight, count);
 
       const subscribeWithRetries = this.subscribeToHistoricalBatch(this.maxRetries);
-
+      this.streamsStats[startingHeight] = 0;
       // eslint-disable-next-line no-await-in-loop
       const stream = await subscribeWithRetries(startingHeight, count);
       this.historicalStreams.push(stream);
     }
+
+    // TODO: tests historical stream stats
+    // setInterval(() => {
+    //   console.log(this.streamsStats);
+    // }, 5000);
   }
 
   stopReadingHistorical() {
     this.removeAllListeners(COMMANDS.HANDLE_STREAM_RETRY);
     this.removeAllListeners(COMMANDS.HANDLE_STREAM_ERROR);
     this.removeAllListeners(COMMANDS.HANDLE_FINISHED_STREAM);
-    this.historicalStreams.forEach((stream) => stream.destroy());
+    this.historicalStreams.forEach((stream) => stream.cancel());
     this.historicalStreams = [];
   }
 
+  stopContinuousSync() {
+    if (this.continuousSyncStream) {
+      this.continuousSyncStream.cancel();
+      this.continuousSyncStream = null;
+      // throw new Error('Continuous sync has not been started');
+    }
+  }
+
+  // TODO: write tests
+  // - it should correctly maintain lastKnownChainHeight after reconnects
   /**
    * Subscribes to continuously arriving block headers
    *
@@ -115,14 +153,28 @@ class BlockHeadersReader extends EventEmitter {
    * @returns {Promise<Stream>}
    */
   async subscribeToNew(fromBlockHeight) {
-    const stream = await this.coreMethods.subscribeToBlockHeadersWithChainLocks({
-      fromBlockHeight,
-    });
+    let lastKnownChainHeight = fromBlockHeight - 1;
+
+    const stream = await DAPIStream
+      .create(
+        this.coreMethods.subscribeToBlockHeadersWithChainLocks,
+        { reconnectTimeoutDelay: 5000 }, // TODO: remove after testing is done
+      )({
+        fromBlockHeight,
+      });
 
     stream.on('data', (data) => {
-      const blockHeaders = data.getBlockHeaders();
+      const blockHeadersResponse = data.getBlockHeaders();
 
-      if (blockHeaders) {
+      if (blockHeadersResponse) {
+        const rawHeaders = blockHeadersResponse.getHeadersList();
+
+        const headers = rawHeaders.map((header) => new BlockHeader(Buffer.from(header)));
+        // console.log('[BlockHeadersReader] Continuous sync, new:', headers.map((header) => header.hash));
+
+        lastKnownChainHeight += headers.length;
+        const batchHeadHeight = lastKnownChainHeight - headers.length + 1;
+
         /**
          * Kills stream in case of deliberate rejection from the outside
          *
@@ -131,15 +183,26 @@ class BlockHeadersReader extends EventEmitter {
         const rejectHeaders = (e) => {
           stream.destroy(e);
         };
-
-        this.emit(EVENTS.BLOCK_HEADERS, blockHeaders.getHeadersList(), rejectHeaders);
+        this.emit(EVENTS.BLOCK_HEADERS, headers, batchHeadHeight, rejectHeaders);
       }
     });
 
-    stream.on('error', (e) => {
-      this.emit(EVENTS.ERROR, e);
+    stream.on('beforeReconnect', (updateArguments) => {
+      updateArguments({
+        fromBlockHeight: lastKnownChainHeight,
+      });
+
+      lastKnownChainHeight -= 1;
     });
 
+    stream.on('error', (e) => {
+      if (e.code === GrpcErrorCodes.CANCELLED) {
+        return;
+      }
+
+      this.emit(EVENTS.ERROR, e);
+    });
+    this.continuousSyncStream = stream;
     return stream;
   }
 
@@ -173,7 +236,8 @@ class BlockHeadersReader extends EventEmitter {
         const blockHeaders = data.getBlockHeaders();
 
         if (blockHeaders) {
-          const headersList = blockHeaders.getHeadersList();
+          const headersList = blockHeaders.getHeadersList()
+            .map((header) => new BlockHeader(Buffer.from(header)));
 
           let rejected = false;
 
@@ -183,11 +247,13 @@ class BlockHeadersReader extends EventEmitter {
            * @param e
            */
           const rejectHeaders = (e) => {
+            console.log('Reject headers', e);
             rejected = true;
             stream.destroy(e);
           };
-
-          this.emit(EVENTS.BLOCK_HEADERS, headersList, rejectHeaders);
+          this.streamsStats[fromBlockHeight] += headersList.length;
+          const batchHeadHeight = fromBlockHeight + headersObtained;
+          this.emit(EVENTS.BLOCK_HEADERS, headersList, batchHeadHeight, rejectHeaders);
 
           if (!rejected) {
             headersObtained += headersList.length;
@@ -196,6 +262,12 @@ class BlockHeadersReader extends EventEmitter {
       });
 
       stream.on('error', (streamError) => {
+        if (streamError.code === GrpcErrorCodes.CANCELLED) {
+          console.log('Block headers historical stream canceled on client');
+          return;
+        }
+
+        console.log('Stream error', streamError, currentRetries, maxRetries);
         if (currentRetries < maxRetries) {
           const newFromBlockHeight = fromBlockHeight + headersObtained;
           const newCount = count - headersObtained;

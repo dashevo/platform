@@ -10,6 +10,9 @@ const isBrowser = require('../../../utils/isBrowser');
 
 const logger = require('../../../logger');
 const ChainSyncMediator = require('../../../types/Wallet/ChainSyncMediator');
+const EVENTS = require('../../../EVENTS');
+
+const PROGRESS_UPDATE_INTERVAL = 1000;
 
 class TransactionSyncStreamWorker extends Worker {
   constructor(options) {
@@ -38,12 +41,24 @@ class TransactionSyncStreamWorker extends Worker {
       ...options,
     });
 
+    // TODO: cleanup
     this.syncIncomingTransactions = false;
     this.stream = null;
     this.incomingSyncPromise = null;
     this.pendingRequest = {};
     this.delayedRequests = {};
     this.lastSyncedBlockHeight = -1;
+    this.progressUpdateTimeout = null;
+
+    /**
+     * Pool of transactions pending to be verified
+     * @type {{}}
+     */
+    this.transactionsToVerify = {};
+
+    this.scheduleProgressUpdate = this.scheduleProgressUpdate.bind(this);
+    this.updateProgress = this.updateProgress.bind(this);
+    this.handleNewBlock = this.handleNewBlock.bind(this);
   }
 
   /**
@@ -143,7 +158,8 @@ class TransactionSyncStreamWorker extends Worker {
     if (skipSynchronization) {
       logger.debug('TransactionSyncStreamWorker - Wallet created from a new mnemonic. Sync from the best block height.');
       const bestBlockHeight = this.storage.getChainStore(this.network.toString()).state.blockHeight;
-      this.setLastSyncedBlockHeight(bestBlockHeight, true);
+      // TODO: probably this check has to go to a completely different place (ChainPlugin?)
+      this.setLastSyncedBlockHeight(bestBlockHeight);
       return;
     }
 
@@ -154,6 +170,7 @@ class TransactionSyncStreamWorker extends Worker {
 
     if (skipSyncBefore > lastKnownBlock.height) {
       this.setLastSyncedBlockHeight(
+        // TODO: shouldn't be skipSyncBefore instead?
         skipSynchronizationBeforeHeight,
       );
     } else if (lastKnownBlock.height !== -1) {
@@ -183,6 +200,29 @@ class TransactionSyncStreamWorker extends Worker {
       logger.error('Error syncing incoming transactions', e);
       this.emit('error', e);
     });
+
+    this.parentEvents.on(EVENTS.BLOCK, this.handleNewBlock);
+  }
+
+  handleNewBlock(block, height) {
+    const metadata = {
+      height,
+      blockHash: block.hash,
+      instantLocked: false, // TBD,
+      chainLocked: false, // TBD
+    };
+
+    const transactionsWithMetadata = [];
+    block.transactions.forEach((tx) => {
+      if (this.transactionsToVerify[tx.hash]) {
+        transactionsWithMetadata.push([tx, metadata]);
+        delete transactionsWithMetadata[tx.hash];
+      }
+    });
+
+    // console.log(`[Wallet: ${this.walletId}] confirmed transactions ${transactionsWithMetadata.map(([tx]) => tx.hash)}`);
+    // TODO: handle newly generated addresses and reconnect to the stream?
+    this.importTransactions(transactionsWithMetadata);
   }
 
   /**
@@ -233,6 +273,8 @@ class TransactionSyncStreamWorker extends Worker {
       }
     }
 
+    this.parentEvents.removeListener(EVENTS.BLOCK, this.handleNewBlock);
+
     // Wrapping `cancel` in `setImmediate` due to bug with double-free
     // explained here (https://github.com/grpc/grpc-node/issues/1652)
     // and here (https://github.com/nodejs/node/issues/38964)
@@ -263,6 +305,26 @@ class TransactionSyncStreamWorker extends Worker {
     const { blockHash } = this.storage.application;
 
     return blockHash;
+  }
+
+  updateProgress() {
+    if (this.progressUpdateTimeout) {
+      clearTimeout(this.progressUpdateTimeout);
+      this.progressUpdateTimeout = null;
+    }
+
+    const chainStore = this.storage.getChainStore(this.network.toString());
+
+    // TODO: test
+    let progress = this.lastSyncedBlockHeight / chainStore.state.blockHeight;
+    progress = Math.round(progress * 1000) / 1000;
+    console.log(`[TransactionSyncStreamWorker] Progress ${progress}, ${this.lastSyncedBlockHeight}/${chainStore.state.blockHeight}`);
+  }
+
+  scheduleProgressUpdate() {
+    if (!this.progressUpdateTimeout) {
+      this.progressUpdateTimeout = setTimeout(this.updateProgress, PROGRESS_UPDATE_INTERVAL);
+    }
   }
 }
 

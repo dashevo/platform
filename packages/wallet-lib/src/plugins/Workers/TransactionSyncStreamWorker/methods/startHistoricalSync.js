@@ -16,7 +16,9 @@ const GRPC_RETRY_ERRORS = [
  * @return {Promise<void>}
  */
 module.exports = async function startHistoricalSync(network) {
-  const bestBlockHeight = await this.getBestBlockHeightFromTransport();
+  const chainStore = this.storage.getChainStore(this.network.toString());
+  const bestBlockHeight = chainStore.state.blockHeight;
+
   const lastSyncedBlockHeight = await this.getLastSyncedBlockHeight();
   const fromBlockHeight = lastSyncedBlockHeight > 0 ? lastSyncedBlockHeight : 1;
   const count = bestBlockHeight - fromBlockHeight || 1;
@@ -47,6 +49,7 @@ module.exports = async function startHistoricalSync(network) {
       return;
     }
 
+    // TODO: finish this function only when all this.transactionsToVerify were processed
     this.stream = null;
     this.emit('error', e, {
       type: 'plugin',
@@ -55,7 +58,8 @@ module.exports = async function startHistoricalSync(network) {
     });
   }
 
-  this.setLastSyncedBlockHeight(bestBlockHeight, true);
+  // TODO: remove "true" and move control over that to ChainSyncMediator
+  this.setLastSyncedBlockHeight(bestBlockHeight);
 
   logger.debug(`TransactionSyncStreamWorker - HistoricalSync - Synchronized ${count} in ${+new Date() - start}ms`);
 };
